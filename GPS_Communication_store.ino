@@ -3,7 +3,6 @@
 #include <WiFi.h> 
 #include <Preferences.h>
 
-
 // Define the RX and TX pins for Serial 2
 #define RXD2 16
 #define TXD2 17
@@ -12,14 +11,12 @@
 
 // TinyGPS++ object
 TinyGPSPlus gps;
-//used for pulling unique ESP Name
+// Used for pulling unique ESP Name from storage
 Preferences preferences;
 String deviceName;
 
 // HardwareSerial instance for Serial 2
 HardwareSerial gpsSerial(2);
-
-
 
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // Broadcast to all ESP32s
 
@@ -34,8 +31,15 @@ struct GPSData {
     long timestamp; // UNIX timestamp (seconds since 1970)
 };
 
+// Send GPS data with ESP name
+struct TransmittedData {
+    char name[10];  // ESP name
+    GPSData gpsData;
+};
+
+// Structure for storing ESP data including its name
 struct ESPNodeData {
-    char name [10]; //name of esp
+    char name[10];  // Name of the ESP (e.g., "ESP1")
     GPSData gpsData; // GPS and sensor readings
     unsigned long lastUpdateTime; // Last received timestamp
 };
@@ -46,33 +50,33 @@ int espNodeCount = 0;  // Number of ESPs stored
 GPSData gpsDataToSend;
 GPSData receivedGPSData;
 
-//function to update and add data for each ESP
-void updateESPData(uint8_t* senderMac, GPSData recievedData){ 
-  for (int i = 0; i< espNodeCount; i++){
-    if (memcmp(espNodes[i].mac, senderMac,6)== 0){ //if esp already exists
-      espNodes[i].gpsData = recievedData;
-      espNodes[i].lastUpdateTime = recievedData.timestamp;
-      return;
+// Function to update and add data for each ESP
+void updateESPData(const char* espName, GPSData receivedData) { 
+    for (int i = 0; i < espNodeCount; i++) {
+        if (strcmp(espNodes[i].name, espName) == 0) {  // Check if the ESP already exists
+            espNodes[i].gpsData = receivedData;
+            espNodes[i].lastUpdateTime = receivedData.timestamp;
+            return;
+        }
     }
-  }
 
-  //if its new and we have space
-  if(espNodeCount < MAX_ESPS){
-    memcpy(espNodes[espNodeCount].mac, senderMac, 6);
-    espNodes[espNodeCount].gpsData = recievedData;
-    espNodes[espNodeCount].lastUpdateTime = recievedData.timestamp;
-    espNodeCount++;
-  } else {
-    Serial.println("ESP storage full! - Increase MAX_ESPs.");
-  }
+    // If it's new and we have space
+    if (espNodeCount < MAX_ESPS) {
+        strncpy(espNodes[espNodeCount].name, espName, sizeof(espNodes[espNodeCount].name));
+        espNodes[espNodeCount].gpsData = receivedData;
+        espNodes[espNodeCount].lastUpdateTime = receivedData.timestamp;
+        espNodeCount++;
+    } else {
+        Serial.println("ESP storage full! - Increase MAX_ESPs.");
+    }
 }
 
-// Callback when data is recieved 
+// Callback when data is received
 void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, int len) {
-  GPSData receivedGPSData;
-  memcpy(&receivedGPSData, incomingData, sizeof(receivedGPSData));
+    TransmittedData receivedData;
+    memcpy(&receivedData, incomingData, sizeof(receivedData));
 
-  updateESPData(info->src_addr, receivedGPSData);
+    updateESPData(receivedData.name, receivedData.gpsData);
 }
 
 // Callback when data is sent
@@ -101,57 +105,33 @@ GPSData readGPS() {
         gpsData.hdop = gps.hdop.value() / 100.0;
         gpsData.satellites = gps.satellites.value();
 
-        //convert GPS time to unix time 
-        if (gps.date.isValid() && gps.time.isValid()){
-          struct tm timeinfo;
-          timeinfo.tm_year = gps.date.year() - 1900;
-          timeinfo.tm_mon = gps.date.month() - 1;
-          timeinfo.tm_mday = gps.date.day();
-          timeinfo.tm_hour = gps.time.hour();
-          timeinfo.tm_min = gps.time.minute();
-          timeinfo.tm_sec = gps.time.second();
+        // Convert GPS time to UNIX time 
+        if (gps.date.isValid() && gps.time.isValid()) {
+            struct tm timeinfo;
+            timeinfo.tm_year = gps.date.year() - 1900;
+            timeinfo.tm_mon = gps.date.month() - 1;
+            timeinfo.tm_mday = gps.date.day();
+            timeinfo.tm_hour = gps.time.hour();
+            timeinfo.tm_min = gps.time.minute();
+            timeinfo.tm_sec = gps.time.second();
 
-         gpsData.timestamp = mktime(&timeinfo); // convert to unix time 
+            gpsData.timestamp = mktime(&timeinfo); // Convert to UNIX time 
         }
     }
 
     return gpsData;
 }
 
-String formatMacAddress(const uint8_t *mac) {
-    char macStr[18];
-    snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
-             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-    return String(macStr);
-}
-
-void printESPData() {
-    Serial.println("Tracked ESP Nodes:");
-    for (int i = 0; i < espNodeCount; i++) {
-        Serial.print("ESP MAC: ");
-        Serial.println(formatMacAddress(espNodes[i].mac));
-        Serial.print("Latitude: ");
-        Serial.println(espNodes[i].gpsData.latitude, 6);
-        Serial.print("Longitude: ");
-        Serial.println(espNodes[i].gpsData.longitude, 6);
-        Serial.print("Last Updated: ");
-        time_t timestamp = espNodes[i].lastUpdateTime;
-        Serial.println(ctime(&timestamp));
-        Serial.println("----------------------");
-    }
-}
-
-
-
 void setup() {
     Serial.begin(115200); 
-    preferences.begin("ESP_Config", true);//open storage in read mode
-    deviceName = preferences.getString("device_name", "Unknown"); //default unknown
-    preferences.end(); //close storage
+    preferences.begin("ESP_Config", true); // Open storage in read mode
+    deviceName = preferences.getString("device_name", "Unknown"); // Default "Unknown"
+    preferences.end(); // Close storage
+    
     WiFi.mode(WIFI_STA); // ESP-NOW works best in station mode
     if (esp_now_init() != ESP_OK) {
-      Serial.println("ESP-NOW initialization failed!");
-      return;
+        Serial.println("ESP-NOW initialization failed!");
+        return;
     }
 
     esp_now_register_send_cb(OnDataSent); // Register send callback
@@ -173,25 +153,39 @@ void setup() {
 }
 
 void loop() {
-    // Get the latest GPS data
-    gpsDataToSend = readGPS();
+    gpsDataToSend = readGPS(); 
 
     // Ensure the data is valid before sending
-    if (gpsDataToSend.latitude != 0 && gpsDataToSend.longitude != 0) { 
-        esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *) &gpsDataToSend, sizeof(gpsDataToSend));
+    if (gpsDataToSend.latitude != 0 && gpsDataToSend.longitude != 0) {
+        TransmittedData dataToSend;
+        strncpy(dataToSend.name, deviceName.c_str(), sizeof(dataToSend.name));
+        dataToSend.gpsData = gpsDataToSend;
 
-        if (result == ESP_OK) {
-            Serial.println("GPS Data sent successfully!");
-        } else {
-            Serial.println("Failed to send GPS Data!");
-        }
+        esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *) &dataToSend, sizeof(dataToSend));
+
+        Serial.print("Sending data from: ");
+        Serial.println(dataToSend.name);
     } else {
         Serial.println("Waiting for valid GPS signal...");
     }
 
     delay(3000);
-
     printESPData();
+}
 
-  
+// Function to print tracked ESP data
+void printESPData() {
+    Serial.println("Tracked ESP Nodes:");
+    for (int i = 0; i < espNodeCount; i++) {
+        Serial.print("ESP Name: ");
+        Serial.println(espNodes[i].name);
+        Serial.print("Latitude: ");
+        Serial.println(espNodes[i].gpsData.latitude, 6);
+        Serial.print("Longitude: ");
+        Serial.println(espNodes[i].gpsData.longitude, 6);
+        Serial.print("Last Updated: ");
+        time_t timestamp = espNodes[i].lastUpdateTime;
+        Serial.println(ctime(&timestamp));
+        Serial.println("----------------------");
+    }
 }
