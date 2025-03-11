@@ -25,7 +25,7 @@ struct GPSData {
     float altitude_m;
     float hdop;
     int satellites;
-    char timestamp[20];  // Format: YYYY/MM/DD HH:MM:SS
+    long timestamp; // UNIX timestamp (seconds since 1970)
 };
 
 struct ESPNodeData {
@@ -45,7 +45,7 @@ void updateESPData(uint8_t* senderMac, GPSData recievedData){
   for (int i = 0; i< espNodeCount; i++){
     if (memcmp(espNodes[i].mac, senderMac,6)== 0){ //if esp already exists
       espNodes[i].gpsData = recievedData;
-      espNodes[i].lastUpdateTime = millis();
+      espNodes[i].lastUpdateTime = recievedData.timestamp;
       return;
     }
   }
@@ -54,7 +54,7 @@ void updateESPData(uint8_t* senderMac, GPSData recievedData){
   if(espNodeCount < MAX_ESPS){
     memcpy(espNodes[espNodeCount].mac, senderMac, 6);
     espNodes[espNodeCount].gpsData = recievedData;
-    espNodes[espNodeCount].lastUpdateTime = millis();
+    espNodes[espNodeCount].lastUpdateTime = recievedData.timestamp;
     espNodeCount++;
   } else {
     Serial.println("ESP storage full! - Increase MAX_ESPs.");
@@ -63,10 +63,10 @@ void updateESPData(uint8_t* senderMac, GPSData recievedData){
 
 // Callback when data is recieved 
 void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, int len) {
-  GPSData recievedGPSData;
+  GPSData receivedGPSData;
   memcpy(&receivedGPSData, incomingData, sizeof(receivedGPSData));
 
-  updateESPData(info->src_addr, recievedGPSData);
+  updateESPData(info->src_addr, receivedGPSData);
 }
 
 // Callback when data is sent
@@ -94,9 +94,19 @@ GPSData readGPS() {
         gpsData.altitude_m = gps.altitude.meters();
         gpsData.hdop = gps.hdop.value() / 100.0;
         gpsData.satellites = gps.satellites.value();
-        snprintf(gpsData.timestamp, sizeof(gpsData.timestamp), "%04d/%02d/%02d %02d:%02d:%02d",
-                 gps.date.year(), gps.date.month(), gps.date.day(),
-                 gps.time.hour(), gps.time.minute(), gps.time.second());
+
+        //convert GPS time to unix time 
+        if (gps.date.isValid() && gps.time.isValid()){
+          struct tm timeinfo;
+          timeinfo.tm_year = gps.date.year() - 1900;
+          timeinfo.tm_mon = gps.date.month() - 1;
+          timeinfo.tm_mday = gps.date.day();
+          timeinfo.tm_hour = gps.time.hour();
+          timeinfo.tm_min = gps.time.minute();
+          timeinfo.tm_sec = gps.time.second();
+
+         gpsData.timestamp = mktime(&timeinfo); // convert to unix time 
+        }
     }
 
     return gpsData;
@@ -119,7 +129,8 @@ void printESPData() {
         Serial.print("Longitude: ");
         Serial.println(espNodes[i].gpsData.longitude, 6);
         Serial.print("Last Updated: ");
-        Serial.println(espNodes[i].lastUpdateTime);
+        time_t timestamp = espNodes[i].lastUpdateTime;
+        Serial.println(ctime(&timestamp));
         Serial.println("----------------------");
     }
 }
