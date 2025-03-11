@@ -1,6 +1,8 @@
 #include <TinyGPS++.h>
 #include <esp_now.h> 
 #include <WiFi.h> 
+#include <Preferences.h>
+
 
 // Define the RX and TX pins for Serial 2
 #define RXD2 16
@@ -10,6 +12,10 @@
 
 // TinyGPS++ object
 TinyGPSPlus gps;
+//used for pulling unique ESP Name
+Preferences preferences;
+String deviceName;
+
 // HardwareSerial instance for Serial 2
 HardwareSerial gpsSerial(2);
 
@@ -29,7 +35,7 @@ struct GPSData {
 };
 
 struct ESPNodeData {
-    uint8_t mac[6];  // Unique identifier
+    char name [10]; //name of esp
     GPSData gpsData; // GPS and sensor readings
     unsigned long lastUpdateTime; // Last received timestamp
 };
@@ -138,7 +144,10 @@ void printESPData() {
 
 
 void setup() {
-    Serial.begin(115200);
+    Serial.begin(115200); 
+    preferences.begin("ESP_Config", true);//open storage in read mode
+    deviceName = preferences.getString("device_name", "Unknown"); //default unknown
+    preferences.end(); //close storage
     WiFi.mode(WIFI_STA); // ESP-NOW works best in station mode
     if (esp_now_init() != ESP_OK) {
       Serial.println("ESP-NOW initialization failed!");
