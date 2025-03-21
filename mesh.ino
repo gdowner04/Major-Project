@@ -79,6 +79,7 @@ String createJsonMessage(const TransmittedData& data){
   doc["name"] = data.name;
   doc["latitude"] = data.gpsData.latitude;
   doc["longitude"] = data.gpsData.longitude;
+  doc["timestamp"] = data.gpsData.timestamp;
   doc["isSOS"] = data.isSOS;
 
   String jsonString;
@@ -97,6 +98,7 @@ bool deserialiseJsonMessage(const String &msg, TransmittedData &data){
   strlcpy(data.name,doc["name"] | "",sizeof(data.name));
   data.gpsData.latitude = doc["latitude"] | 0.0;
   data.gpsData.longitude = doc["longitude"] | 0.0;
+  data.gpsData.timestamp = doc["timestamp"] | 0;
   data.isSOS = doc["isSOS"] | false; 
 
   return true;
@@ -255,7 +257,7 @@ void loop() {
         outputESPData(gpsDataToSend.latitude, gpsDataToSend.longitude, gpsDataToSend.timestamp);
     }
 
-   
+    mesh.update();
 }
 
 void printESPData() {
