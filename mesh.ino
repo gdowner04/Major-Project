@@ -136,7 +136,7 @@ void receivedCallback(uint32_t from, String &msg) {
         }
         sosActive = true; // new sos has been received
       }
-      updateESPData(receivedData.name,receivedData.gpsData)
+      updateESPData(receivedData.name,receivedData.gpsData);
     }
 
 
@@ -222,6 +222,7 @@ void setup() {
 }
 
 void loop() {
+    mesh.update();
     gpsDataToSend = readGPS();
 
     if (gpsDataToSend.latitude != 0 && gpsDataToSend.longitude != 0) {
@@ -254,7 +255,7 @@ void loop() {
         outputESPData(gpsDataToSend.latitude, gpsDataToSend.longitude, gpsDataToSend.timestamp);
     }
 
-    mesh.update();
+   
 }
 
 void printESPData() {
