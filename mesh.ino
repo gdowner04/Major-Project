@@ -86,7 +86,7 @@ String createJsonMessage(const TransmittedData& data){
   return jsonString;
 }
 
-bool deserialiseJsonMessage(const String &msg, transmittedData &data){
+bool deserialiseJsonMessage(const String &msg, TransmittedData &data){
   StaticJsonDocument<256> doc; 
   DeserializationError error = deserializeJson(doc, msg);
   if (error){
