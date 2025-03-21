@@ -5,6 +5,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include "painlessMesh.h"
+#include <ArduinoJson.h>
 
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 32 // OLED display height, in pixels
@@ -72,6 +73,35 @@ int espNodeCount = 0;
 GPSData gpsDataToSend;
 GPSData receivedGPSData;
 
+//function to prepare message 
+String createJsonMessage(const TransmittedData& data){
+  StaticJsonDocument<256> doc;
+  doc["name"] = data.name;
+  doc["latitude"] = data.gpsData.latitude;
+  doc["longitude"] = data.gpsData.longitude;
+  doc["isSOS"] = data.isSOS;
+
+  String jsonString;
+  serializeJson(doc, jsonString);
+  return jsonString;
+}
+
+bool deserialiseJsonMessage(const String &msg, transmittedData &data){
+  StaticJsonDocument<256> doc; 
+  DeserializationError error = deserializeJson(doc, msg);
+  if (error){
+    Serial.print("deserializeJson() failed: ");
+    Serial.println(error.c_str());
+    return false;
+  }
+  strlcpy(data.name,doc["name"] | "",sizeof(data.name));
+  data.gpsData.latitude = doc["latitude"] | 0.0;
+  data.gpsData.longitude = doc["longitude"] | 0.0;
+  data.isSOS = doc["isSOS"] | false; 
+
+  return true;
+}
+
 void updateESPData(const char* espName, GPSData receivedData) {
     for (int i = 0; i < espNodeCount; i++) {
         if (strcmp(espNodes[i].name, espName) == 0) {
@@ -93,8 +123,24 @@ void updateESPData(const char* espName, GPSData receivedData) {
 
 void receivedCallback(uint32_t from, String &msg) {
     Serial.printf("Received from %u msg=%s\n", from, msg.c_str());
-    // Deserialize the message and update the ESP data
-    // You can use a library like ArduinoJson to parse the message
+    TransmittedData receivedData; 
+    if (deserialiseJsonMessage(msg, receivedData)){
+      if (receivedData.isSOS){
+        currentSOS.espName = String(receivedData.name);
+        currentSOS.timestamp = receivedData.gpsData.timestamp;
+        sosStartTime = millis();
+        //store SOS in the array
+        if(sosAlertCount < MAX_SOS_ALERTS){
+          sosAlerts[sosAlertCount] = currentSOS;
+          sosAlertCount++;
+        }
+        sosActive = true; // new sos has been received
+      }
+      updateESPData(receivedData.name,receivedData.gpsData)
+    }
+
+
+
 }
 
 void newConnectionCallback(uint32_t nodeId) {
@@ -114,9 +160,8 @@ void sendSOS() {
     strncpy(dataToSend.name, deviceName.c_str(), sizeof(dataToSend.name));
     dataToSend.gpsData = gpsDataToSend;
     dataToSend.isSOS = true;
-
-    String msg = String(dataToSend.name) + "," + String(dataToSend.gpsData.latitude) + "," + String(dataToSend.gpsData.longitude) + ",SOS";
-    mesh.sendBroadcast(msg);
+    String jsonMessage = createJsonMessage(dataToSend);
+    mesh.sendBroadcast(jsonMessage);
     Serial.println("SOS message sent!");
 }
 
@@ -183,9 +228,8 @@ void loop() {
         TransmittedData dataToSend;
         strncpy(dataToSend.name, deviceName.c_str(), sizeof(dataToSend.name));
         dataToSend.gpsData = gpsDataToSend;
-
-        String msg = String(dataToSend.name) + "," + String(dataToSend.gpsData.latitude) + "," + String(dataToSend.gpsData.longitude);
-        mesh.sendBroadcast(msg);
+        String jsonMessage = createJsonMessage(dataToSend);
+        mesh.sendBroadcast(jsonMessage);
 
         Serial.print("Sending data from: ");
         Serial.println(dataToSend.name);
