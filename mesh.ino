@@ -20,6 +20,7 @@ const int pageSwitchInterval = 3000; // Switch every 3 seconds
 
 #define SOS_BUTTON_PIN 4
 #define MAX_SOS_ALERTS 10  // Max number of SOS alerts to store
+#define SOS_COOLDOWN 5000  // 5 seconds between SOS sends
 
 #define MESH_PREFIX "whateverYouLike"
 #define MESH_PASSWORD "somethingSneaky"
@@ -57,13 +58,14 @@ struct ESPNodeData {
 };
 
 struct SOSAlert {
-    String espName;
+    String name;
     long timestamp;
 };
 
 SOSAlert sosAlerts[MAX_SOS_ALERTS];
 int sosAlertCount = 0;
 bool sosActive;
+unsigned long lastSOSSendTime = 0;
 SOSAlert currentSOS;
 long sosStartTime = millis();
 
@@ -128,7 +130,7 @@ void receivedCallback(uint32_t from, String &msg) {
     TransmittedData receivedData; 
     if (deserialiseJsonMessage(msg, receivedData)){
       if (receivedData.isSOS){
-        currentSOS.espName = String(receivedData.name);
+        currentSOS.name = String(receivedData.name);
         currentSOS.timestamp = receivedData.gpsData.timestamp;
         sosStartTime = millis();
         //store SOS in the array
@@ -158,12 +160,16 @@ void nodeTimeAdjustedCallback(int32_t offset) {
 }
 
 void sendSOS() {
+    if (millis() - lastSOSSendTime < SOS_COOLDOWN) {
+      return;  // Don't send if in cooldown
+    }
     TransmittedData dataToSend;
     strncpy(dataToSend.name, deviceName.c_str(), sizeof(dataToSend.name));
     dataToSend.gpsData = gpsDataToSend;
     dataToSend.isSOS = true;
     String jsonMessage = createJsonMessage(dataToSend);
     mesh.sendBroadcast(jsonMessage);
+    lastSOSSendTime = millis();
     Serial.println("SOS message sent!");
 }
 
@@ -190,7 +196,7 @@ GPSData readGPS() {
             timeinfo.tm_year = gps.date.year() - 1900;
             timeinfo.tm_mon = gps.date.month() - 1;
             timeinfo.tm_mday = gps.date.day();
-            timeinfo.tm_hour = gps.time.hour();
+            timeinfo.tm_hour = gps.time.hour()+ 1; //accomodate for daylight saving time
             timeinfo.tm_min = gps.time.minute();
             timeinfo.tm_sec = gps.time.second();
 
@@ -245,7 +251,8 @@ void loop() {
         delay(500);
     }
 
-    printESPData();
+    //printESPData();
+    printSOSData();
     if (sosActive) {
         if (millis() - sosStartTime < 5000) {
             displaySOSAlert(currentSOS);
@@ -271,6 +278,17 @@ void printESPData() {
         Serial.println(espNodes[i].gpsData.longitude, 6);
         Serial.print("Last Updated: ");
         time_t timestamp = espNodes[i].lastUpdateTime;
+        Serial.println(ctime(&timestamp));
+        Serial.println("----------------------");
+    }
+}
+void printSOSData() {
+    Serial.println("Saved SOS ALERTS:");
+    for (int i = 0; i < sosAlertCount; i++) {
+        Serial.print("SOS FROM Name: ");
+        Serial.println(sosAlerts[i].name);
+        Serial.print("Timestamp: ");
+        time_t timestamp = sosAlerts[i].timestamp;
         Serial.println(ctime(&timestamp));
         Serial.println("----------------------");
     }
@@ -313,7 +331,7 @@ void displaySOSAlert(SOSAlert alert) {
     display.setCursor(0, 10);
     display.print("SOS ALERT RECEIVED! - ");
     display.print("From: ");
-    display.println(alert.espName);
+    display.println(alert.name);
     display.print("Time: ");
     time_t sosTime = alert.timestamp;
     struct tm *timeInfo = localtime(&sosTime);
