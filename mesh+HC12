@@ -98,20 +98,30 @@ String createJsonMessage(const TransmittedData& data){
 }
 
 bool deserialiseJsonMessage(const String &msg, TransmittedData &data){
-  StaticJsonDocument<256> doc; 
-  DeserializationError error = deserializeJson(doc, msg);
-  if (error){
-    Serial.print("deserializeJson() failed: ");
-    Serial.println(error.c_str());
-    return false;
-  }
-  strlcpy(data.name,doc["name"] | "",sizeof(data.name));
-  data.gpsData.latitude = doc["latitude"] | 0.0;
-  data.gpsData.longitude = doc["longitude"] | 0.0;
-  data.gpsData.timestamp = doc["timestamp"] | 0;
-  data.isSOS = doc["isSOS"] | false; 
-
-  return true;
+    StaticJsonDocument<256> doc; 
+    DeserializationError error = deserializeJson(doc, msg);
+    if (error){
+        Serial.print("deserializeJson() failed: ");
+        Serial.println(error.c_str());
+        return false;
+    }
+    
+    // Clear the structure first
+    memset(&data, 0, sizeof(data));
+    
+    strlcpy(data.name, doc["name"] | "", sizeof(data.name));
+    data.gpsData.latitude = doc["latitude"] | 0.0;
+    data.gpsData.longitude = doc["longitude"] | 0.0;
+    data.gpsData.timestamp = doc["timestamp"] | 0;
+    
+    // Explicitly check if isSOS exists in the JSON
+    if (doc.containsKey("isSOS")) {
+        data.isSOS = doc["isSOS"];
+    } else {
+        data.isSOS = false;  // Default to false if field doesn't exist
+    }
+    
+    return true;
 }
 
 void updateESPData(const char* espName, GPSData receivedData) {
@@ -137,6 +147,8 @@ void receivedCallback(uint32_t from, String &msg) {
     Serial.printf("Received from %u msg=%s\n", from, msg.c_str());
     TransmittedData receivedData; 
     if (deserialiseJsonMessage(msg, receivedData)){
+      updateESPData(receivedData.name, receivedData.gpsData);
+
       if (receivedData.isSOS){
         currentSOS.name = String(receivedData.name);
         currentSOS.timestamp = receivedData.gpsData.timestamp;
@@ -216,6 +228,42 @@ GPSData readGPS() {
     return gpsData;
 }
 
+void sendToListener(const String& type) {
+    StaticJsonDocument<2048> doc;  
+    doc["type"] = type;
+
+    JsonArray arr = doc.createNestedArray("data");
+
+    if (type == "SOS") {
+        for (int i = 0; i < sosAlertCount; i++) {
+            JsonObject obj = arr.createNestedObject();
+            obj["name"] = sosAlerts[i].name;
+            obj["timestamp"] = sosAlerts[i].timestamp;
+        }
+    } else if (type == "ESP") {
+        for (int i = 0; i < espNodeCount; i++) {
+            JsonObject obj = arr.createNestedObject();
+            obj["name"] = espNodes[i].name;
+
+            JsonObject gps = obj.createNestedObject("gps");
+            gps["latitude"] = espNodes[i].gpsData.latitude;
+            gps["longitude"] = espNodes[i].gpsData.longitude;
+            gps["speed_kmh"] = espNodes[i].gpsData.speed_kmh;
+            gps["altitude_m"] = espNodes[i].gpsData.altitude_m;
+            gps["hdop"] = espNodes[i].gpsData.hdop;
+            gps["satellites"] = espNodes[i].gpsData.satellites;
+            gps["timestamp"] = espNodes[i].gpsData.timestamp;
+
+            obj["lastUpdateTime"] = espNodes[i].lastUpdateTime;
+        }
+    }
+
+    String output;
+    serializeJson(doc, output);
+    HC12.println(output);  // HC12 send
+}
+
+
 void setup() {
     Serial.begin(115200);
     preferences.begin("ESP_Config", true);
@@ -248,6 +296,7 @@ void loop() {
         TransmittedData dataToSend;
         strncpy(dataToSend.name, deviceName.c_str(), sizeof(dataToSend.name));
         dataToSend.gpsData = gpsDataToSend;
+        dataToSend.isSOS = false;
         String jsonMessage = createJsonMessage(dataToSend);
         mesh.sendBroadcast(jsonMessage);
 
@@ -262,7 +311,13 @@ void loop() {
         delay(500);
     }
     if (digitalRead(LISTENER_BUTTON_PIN) == LOW) {
-        HC12.println("HELLO");
+        Serial.println("Attempting Listener Upload");
+        if(sosAlertCount > 0){
+          sendToListener("SOS");
+        }
+        if(espNodeCount > 0){
+          sendToListener("ESP");
+        }
         delay(500);
     }
 
