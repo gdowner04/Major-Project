@@ -21,6 +21,7 @@ const int pageSwitchInterval = 3000; // Switch every 3 seconds
 
 #define SOS_BUTTON_PIN 4
 #define MAX_SOS_ALERTS 10  // Max number of SOS alerts to store
+#define MAX_SOS_SENT 3 //max number of SOS alerts one node can send 
 #define SOS_COOLDOWN 5000  // 5 seconds between SOS sends
 
 #define LISTENER_BUTTON_PIN 5
@@ -70,6 +71,7 @@ struct SOSAlert {
 
 SOSAlert sosAlerts[MAX_SOS_ALERTS];
 int sosAlertCount = 0;
+int alertsSent = 0;
 bool sosActive;
 unsigned long lastSOSSendTime = 0;
 SOSAlert currentSOS;
@@ -177,6 +179,7 @@ void sendSOS() {
     mesh.sendBroadcast(jsonMessage);
     lastSOSSendTime = millis();
     Serial.println("SOS message sent!");
+    alertsSent++;
 }
 
 GPSData readGPS() {
@@ -254,7 +257,7 @@ void loop() {
         Serial.println("Waiting for valid GPS signal...");
     }
 
-    if (digitalRead(SOS_BUTTON_PIN) == LOW) {
+    if (digitalRead(SOS_BUTTON_PIN) == LOW && alertsSent < MAX_SOS_SENT) {
         sendSOS();
         delay(500);
     }
