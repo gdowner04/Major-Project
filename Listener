@@ -1,1 +1,147 @@
+#include <HardwareSerial.h>
+#include <WiFi.h>
+#include <Preferences.h>
+#include <Wire.h>
+#include <ArduinoJson.h>
 
+#define MAX_SOS_ALERTS 10
+#define MAX_ESPS 10  // Define this if you haven't already
+
+HardwareSerial HC12(2); // Use UART2
+
+struct GPSData {
+    float latitude;
+    float longitude;
+    float speed_kmh;
+    float altitude_m;
+    float hdop;
+    int satellites;
+    long timestamp;
+};
+
+struct ESPNodeData {
+    char name[10];
+    GPSData gpsData;
+    unsigned long lastUpdateTime;
+};
+
+struct SOSAlert {
+    String name;
+    long timestamp;
+};
+
+SOSAlert sosAlerts[MAX_SOS_ALERTS];
+int sosAlertCount = 0;
+
+ESPNodeData espNodes[MAX_ESPS];
+int espNodeCount = 0;
+
+void receiveArrayFromHC12() {
+    if (!HC12.available()) return;
+
+    String input = HC12.readStringUntil('\n');
+    StaticJsonDocument<2048> doc;
+    DeserializationError error = deserializeJson(doc, input);
+
+    if (error) {
+        Serial.print("Deserialization error: ");
+        Serial.println(error.c_str());
+        return;
+    }
+
+    String type = doc["type"] | "";
+    JsonArray arr = doc["data"].as<JsonArray>();
+
+    if (type == "SOS") {
+        for (JsonObject obj : arr) {
+            long timestamp = obj["timestamp"];
+            bool exists = false;
+
+            for (int i = 0; i < sosAlertCount; i++) {
+                if (sosAlerts[i].timestamp == timestamp) {
+                    exists = true;
+                    break;
+                }
+            }
+
+            if (!exists && sosAlertCount < MAX_SOS_ALERTS) {
+                sosAlerts[sosAlertCount].name = obj["name"].as<String>();
+                sosAlerts[sosAlertCount].timestamp = timestamp;
+                sosAlertCount++;
+            }
+        }
+
+    } else if (type == "ESP") {
+        for (JsonObject obj : arr) {
+            String name = obj["name"] | "";
+            int index = -1;
+
+            for (int i = 0; i < espNodeCount; i++) {
+                if (String(espNodes[i].name) == name) {
+                    index = i;
+                    break;
+                }
+            }
+
+            // If not found, add new node
+            if (index == -1 && espNodeCount < MAX_ESPS) {
+                index = espNodeCount++;
+                strlcpy(espNodes[index].name, name.c_str(), sizeof(espNodes[index].name));
+            }
+
+            if (index != -1) {
+                JsonObject gps = obj["gps"];
+                espNodes[index].gpsData.latitude = gps["latitude"];
+                espNodes[index].gpsData.longitude = gps["longitude"];
+                espNodes[index].gpsData.speed_kmh = gps["speed_kmh"];
+                espNodes[index].gpsData.altitude_m = gps["altitude_m"];
+                espNodes[index].gpsData.hdop = gps["hdop"];
+                espNodes[index].gpsData.satellites = gps["satellites"];
+                espNodes[index].gpsData.timestamp = gps["timestamp"];
+                espNodes[index].lastUpdateTime = obj["lastUpdateTime"];
+            }
+        }
+
+    } else {
+        Serial.println("Unknown data type received over HC12.");
+    }
+  printESPData();
+  printSOSData();
+}
+
+void setup() {
+    Serial.begin(115200);
+    HC12.begin(9600, SERIAL_8N1, 19, 18); // RX=19, TX=18 for HC-12
+    Serial.println("HC-12 receiver started...");
+}
+
+void loop() {
+    receiveArrayFromHC12();
+}
+
+void printESPData() {
+    Serial.println("Tracked ESP Nodes:");
+    for (int i = 0; i < espNodeCount; i++) {
+        Serial.print("ESP Name: ");
+        Serial.println(espNodes[i].name);
+        Serial.print("Latitude: ");
+        Serial.println(espNodes[i].gpsData.latitude, 6);
+        Serial.print("Longitude: ");
+        Serial.println(espNodes[i].gpsData.longitude, 6);
+        Serial.print("Last Updated: ");
+        time_t timestamp = espNodes[i].lastUpdateTime;
+        Serial.println(ctime(&timestamp));
+        Serial.println("----------------------");
+    }
+}
+void printSOSData() {
+    Serial.println("Saved SOS ALERTS:");
+    for (int i = 0; i < sosAlertCount; i++) {
+        Serial.print("SOS FROM Name: ");
+        Serial.println(sosAlerts[i].name);
+        Serial.print("Timestamp: ");
+        time_t timestamp = sosAlerts[i].timestamp;
+        Serial.println(ctime(&timestamp));
+        Serial.println("----------------------");
+    }
+}
