@@ -1,13 +1,42 @@
 #include <HardwareSerial.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <Preferences.h>
 #include <Wire.h>
 #include <ArduinoJson.h>
+#include <Firebase_ESP_Client.h>
+#include "addons/TokenHelper.h"
+#include "addons/RTDBHelper.h"
+
+#define WIFI_SSID "Gcomputer"
+#define WIFI_PASSWORD "computer"
+#define WIFI_SSID2 "BT-6XA3M6"
+#define WIFI_PASSWORD2 "DAG7g9MaqTnEFX"
+
+#define API_KEY "AIzaSyCHLDymgusUenZb-t9nOUlTdNuB6dxSxRI"
+#define DATABASE_URL "https://react-esp32-tracker-default-rtdb.europe-west1.firebasedatabase.app/"
 
 #define MAX_SOS_ALERTS 10
-#define MAX_ESPS 10  // Define this if you haven't already
+#define MAX_ESPS 10
+
+#define WIFI_LED 4
+#define MSG_LED 5
 
 HardwareSerial HC12(2); // Use UART2
+
+// Firebase objects
+FirebaseData fbdo;
+FirebaseAuth auth;
+FirebaseConfig config;
+
+bool incMsg;
+long incMsgTime;
+
+bool signupOK = false;
+
+// Database paths
+String sosPath = "/sosAlerts";
+String espNodesPath = "/espNodes";
 
 struct GPSData {
     float latitude;
@@ -36,9 +65,106 @@ int sosAlertCount = 0;
 ESPNodeData espNodes[MAX_ESPS];
 int espNodeCount = 0;
 
-void receiveArrayFromHC12() {
-    if (!HC12.available()) return;
+void initWiFiAndFirebase() {
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    Serial.print("Connecting to WiFi");
+    while (WiFi.status() != WL_CONNECTED) {
+        digitalWrite(WIFI_LED, LOW);
+        Serial.print(".");
+        delay(300);
+    }
+    Serial.println();
+    Serial.print("Connected with IP: ");
+    Serial.println(WiFi.localIP());
+    Serial.println();
+    digitalWrite(WIFI_LED, HIGH);
 
+    // Assign the API key and RTDB URL
+    config.api_key = API_KEY;
+    config.database_url = DATABASE_URL;
+    if(Firebase.signUp(&config, &auth,"","")){
+      Serial.println("Sign up OK");
+      signupOK = true;
+    }else{
+      Serial.printf("%s\n", config.signer.signupError.message.c_str());
+    }
+
+    config.token_status_callback = tokenStatusCallback;
+    Firebase.begin(&config,&auth);
+    Firebase.reconnectWiFi(true);
+}
+
+void uploadESPNodesToFirebase() {
+    if (!Firebase.ready() || !signupOK) {
+        Serial.println("Firebase not ready or not signed up");
+        return;
+    }
+
+    for (int i = 0; i < espNodeCount; i++) {
+        // Create a unique path for each ESP node
+        String nodePath = espNodesPath + "/" + espNodes[i].name;
+        
+        // Create a JSON object for the ESP node
+        FirebaseJson json;
+        json.set("name", espNodes[i].name);
+        
+        // GPS Data
+        json.set("gps/latitude", espNodes[i].gpsData.latitude);
+        json.set("gps/longitude", espNodes[i].gpsData.longitude);
+        json.set("gps/speed_kmh", espNodes[i].gpsData.speed_kmh);
+        json.set("gps/altitude_m", espNodes[i].gpsData.altitude_m);
+        json.set("gps/hdop", espNodes[i].gpsData.hdop);
+        json.set("gps/satellites", espNodes[i].gpsData.satellites);
+        json.set("gps/timestamp", espNodes[i].gpsData.timestamp);
+        
+        json.set("lastUpdateTime", espNodes[i].lastUpdateTime);
+
+        // Push as a new child under the node path with a unique key
+        String pushPath = nodePath + "/updates";
+        if (Firebase.RTDB.pushJSON(&fbdo, pushPath.c_str(), &json)) {
+            Serial.print("Successfully uploaded ESP Node update: ");
+            Serial.println(espNodes[i].name);
+            
+            // Optionally, update the latest data directly
+            String latestPath = nodePath + "/latest";
+            Firebase.RTDB.setJSON(&fbdo, latestPath.c_str(), &json);
+        } else {
+            Serial.print("Failed to upload ESP Node: ");
+            Serial.println(espNodes[i].name);
+            Serial.printf("Error: %s\n", fbdo.errorReason().c_str());
+        }
+    }
+}
+
+void uploadSOSAlertsToFirebase() {
+    if (!Firebase.ready() || !signupOK) {
+        Serial.println("Firebase not ready or not signed up");
+        return;
+    }
+
+    for (int i = 0; i < sosAlertCount; i++) {
+        // Create a JSON object for the SOS alert
+        FirebaseJson json;
+        json.set("name", sosAlerts[i].name);
+        json.set("timestamp", sosAlerts[i].timestamp);
+
+        // Push as a new child under SOS path with a unique key
+        if (Firebase.RTDB.pushJSON(&fbdo, sosPath.c_str(), &json)) {
+            Serial.print("Successfully uploaded SOS Alert from: ");
+            Serial.println(sosAlerts[i].name);
+        } else {
+            Serial.print("Failed to upload SOS Alert from: ");
+            Serial.println(sosAlerts[i].name);
+            Serial.printf("Error: %s\n", fbdo.errorReason().c_str());
+        }
+    }
+}
+
+
+void receiveArrayFromHC12() {
+    if (!HC12.available()){
+      return;
+    }
     String input = HC12.readStringUntil('\n');
     StaticJsonDocument<2048> doc;
     DeserializationError error = deserializeJson(doc, input);
@@ -70,7 +196,6 @@ void receiveArrayFromHC12() {
                 sosAlertCount++;
             }
         }
-
     } else if (type == "ESP") {
         for (JsonObject obj : arr) {
             String name = obj["name"] | "";
@@ -83,7 +208,6 @@ void receiveArrayFromHC12() {
                 }
             }
 
-            // If not found, add new node
             if (index == -1 && espNodeCount < MAX_ESPS) {
                 index = espNodeCount++;
                 strlcpy(espNodes[index].name, name.c_str(), sizeof(espNodes[index].name));
@@ -101,22 +225,15 @@ void receiveArrayFromHC12() {
                 espNodes[index].lastUpdateTime = obj["lastUpdateTime"];
             }
         }
-
     } else {
         Serial.println("Unknown data type received over HC12.");
     }
-  printESPData();
-  printSOSData();
-}
-
-void setup() {
-    Serial.begin(115200);
-    HC12.begin(9600, SERIAL_8N1, 19, 18); // RX=19, TX=18 for HC-12
-    Serial.println("HC-12 receiver started...");
-}
-
-void loop() {
-    receiveArrayFromHC12();
+    incMsg = true;
+    incMsgTime = millis();
+    digitalWrite(MSG_LED, HIGH);
+    printESPData();
+    printSOSData();
+    delay(500);
 }
 
 void printESPData() {
@@ -134,6 +251,7 @@ void printESPData() {
         Serial.println("----------------------");
     }
 }
+
 void printSOSData() {
     Serial.println("Saved SOS ALERTS:");
     for (int i = 0; i < sosAlertCount; i++) {
@@ -143,5 +261,37 @@ void printSOSData() {
         time_t timestamp = sosAlerts[i].timestamp;
         Serial.println(ctime(&timestamp));
         Serial.println("----------------------");
+    }
+}
+
+void setup() {
+    Serial.begin(115200);
+    HC12.begin(9600, SERIAL_8N1, 19, 18); // RX=19, TX=18 for HC-12
+    Serial.println("HC-12 receiver started...");
+    pinMode(4, OUTPUT);
+    pinMode(5,OUTPUT);
+    
+    initWiFiAndFirebase();
+}
+
+void loop() {
+    receiveArrayFromHC12();
+    
+    // Upload data to Firebase periodically (every 30 seconds)
+    static unsigned long lastUploadTime = 0;
+    if (millis() - lastUploadTime > 30000) {
+        uploadSOSAlertsToFirebase();
+        uploadESPNodesToFirebase();
+        lastUploadTime = millis();
+    }
+    if(incMsg && millis() - incMsgTime > 3500){
+      digitalWrite(MSG_LED, LOW);
+    }
+
+    
+    // Handle Firebase token refresh and other tasks
+    if (Firebase.isTokenExpired()) {
+        Firebase.refreshToken(&config);
+        Serial.println("Refresh token");
     }
 }
